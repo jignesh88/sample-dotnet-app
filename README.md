@@ -125,6 +125,3 @@ The application is deployed to an IIS-enabled EC2 instance through the TeamCity 
 4. Installing/updating the application on IIS
 5. Verifying the deployment
 
-## License
-
-MIT
