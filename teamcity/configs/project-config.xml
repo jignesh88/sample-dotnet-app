@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" uuid="1234abcd-5678-efgh-9012-ijklmnopqrst" xsi:noNamespaceSchemaLocation="https://www.jetbrains.com/teamcity/schemas/2021.1/project-config.xsd">
+  <name>SampleWebApp</name>
+  <description>Sample .NET Web Application with AWS Deployment</description>
+  <parameters>
+    <param name="env.AWS_REGION" value="us-east-1" />
+    <param name="env.DOTNET_VERSION" value="8.0" />
+    <param name="env.DEPLOYMENT_BUCKET" value="%system.teamcity.build.branch%.samplewebapp.deployment" />
+    <param name="env.GITHUB_REPO_OWNER" value="your-github-org" />
+    <param name="env.GITHUB_REPO_NAME" value="sample-dotnet-app" />
+    <param name="env.BLAZEMETER_API_KEY" value="credentialsJSON:blazemeter-api-key" />
+    <param name="env.BLAZEMETER_API_SECRET" value="credentialsJSON:blazemeter-api-secret" />
+    <param name="env.WEBSITE_URL" value="https://webapp.example.com" />
+  </parameters>
+  <cleanup>
+    <policy type="days" cleanup-level="HISTORY_ENTRY">
+      <parameters>
+        <param name="keepDays" value="30" />
+      </parameters>
+    </policy>
+    <policy type="days" cleanup-level="ARTIFACTS">
+      <parameters>
+        <param name="keepDays" value="7" />
+      </parameters>
+    </policy>
+  </cleanup>
+</project>

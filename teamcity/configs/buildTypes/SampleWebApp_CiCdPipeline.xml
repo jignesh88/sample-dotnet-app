@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<build-type xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" uuid="5678efgh-9012-ijkl-mnop-qrstuvwxyz12" xsi:noNamespaceSchemaLocation="https://www.jetbrains.com/teamcity/schemas/2021.1/project-config.xsd">
+  <name>CI/CD Pipeline</name>
+  <description>Build, test, deploy, and monitor the SampleWebApp</description>
+  <settings>
+    <parameters>
+      <param name="env.EC2_INSTANCE_ID" value="%system.EC2_INSTANCE_ID%" />
+      <param name="env.GITHUB_ISSUE_NUMBER" value="%system.GITHUB_ISSUE_NUMBER%" />
+      <param name="env.GITHUB_TOKEN" value="credentialsJSON:github-token" />
+    </parameters>
+    <build-runners>
+      <!-- Step 1: Build and Test the .NET Application -->
+      <runner id="RUNNER_1" name="Build and Test" type="dotnet">
+        <parameters>
+          <param name="command" value="test" />
+          <param name="paths" value="SampleWebApp.sln" />
+          <param name="dotNetCoverage.dotCover.home.path" value="%teamcity.tool.JetBrains.dotCover.CommandLineTools.DEFAULT%" />
+          <param name="teamcity.step.mode" value="default" />
+          <param name="verbosity" value="normal" />
+        </parameters>
+      </runner>
+      
+      <!-- Step 2: Package the Application -->
+      <runner id="RUNNER_2" name="Package Application" type="jetbrains_powershell">
+        <parameters>
+          <param name="jetbrains_powershell_bitness" value="x64" />
+          <param name="jetbrains_powershell_execution" value="PS1" />
+          <param name="jetbrains_powershell_scriptArguments" value="-ProjectPath &quot;SampleWebApp&quot; -OutputPath &quot;artifacts&quot;" />
+          <param name="jetbrains_powershell_script_file" value="scripts/deployment/build-package.ps1" />
+          <param name="jetbrains_powershell_script_mode" value="FILE" />
+          <param name="teamcity.step.mode" value="default" />
+        </parameters>
+      </runner>
+      
+      <!-- Step 3: Collect Pre-Deployment Metrics -->
+      <runner id="RUNNER_3" name="Collect Pre-Deployment Metrics" type="jetbrains_powershell">
+        <parameters>
+          <param name="jetbrains_powershell_bitness" value="x64" />
+          <param name="jetbrains_powershell_execution" value="PS1" />
+          <param name="jetbrains_powershell_scriptArguments" value="-InstanceId &quot;%env.EC2_INSTANCE_ID%&quot; -Region &quot;%env.AWS_REGION%&quot; -OutputPath &quot;artifacts/metrics/pre-deployment&quot; -TestId &quot;pre-deployment-%system.build.number%&quot; -DurationMinutes 5" />
+          <param name="jetbrains_powershell_script_file" value="scripts/monitoring/collect-metrics.ps1" />
+          <param name="jetbrains_powershell_script_mode" value="FILE" />
+          <param name="teamcity.step.mode" value="default" />
+        </parameters>
+      </runner>
+      
+      <!-- Step 4: Deploy to EC2 -->
+      <runner id="RUNNER_4" name="Deploy to EC2" type="jetbrains_powershell">
+        <parameters>
+          <param name="jetbrains_powershell_bitness" value="x64" />
+          <param name="jetbrains_powershell_execution" value="PS1" />
+          <param name="jetbrains_powershell_scriptArguments" value="-InstanceId &quot;%env.EC2_INSTANCE_ID%&quot; -S3BucketName &quot;%env.DEPLOYMENT_BUCKET%&quot; -PackagePath &quot;artifacts/SampleWebApp.zip&quot; -Region &quot;%env.AWS_REGION%&quot;" />
+          <param name="jetbrains_powershell_script_file" value="scripts/deployment/deploy-to-ec2.ps1" />
+          <param name="jetbrains_powershell_script_mode" value="FILE" />
+          <param name="teamcity.step.mode" value="default" />
+        </parameters>
+      </runner>
+      
+      <!-- Step 5: Run BlazeMeter Performance Test -->
+      <runner id="RUNNER_5" name="Run Performance Test" type="simpleRunner">
+        <parameters>
+          <param name="script.content"><![CDATA[
+#!/bin/bash
+
+# Install BlazeMeter CLI if not already installed
+if ! command -v bzt &> /dev/null; then
+    echo "Installing BlazeMeter Taurus..."
+    pip install bzt
+fi
+
+# Create BlazeMeter test configuration
+cat > blazemeter-test.yml << EOF
+execution:
+  - concurrency: 50
+    ramp-up: 1m
+    hold-for: 5m
+    scenario: website-test
+
+scenarios:
+  website-test:
+    requests:
+      - url: %env.WEBSITE_URL%
+        method: GET
+        label: Home Page
+      - url: %env.WEBSITE_URL%/Privacy
+        method: GET
+        label: Privacy Page
+
+reporting:
+  - module: blazemeter
+    token: %env.BLAZEMETER_API_KEY%
+    secret: %env.BLAZEMETER_API_SECRET%
+    test: SampleWebApp Performance Test
+    project: SampleWebApp
+
+  - module: junit-xml
+    filename: artifacts/blazemeter-results/report.xml
+EOF
+
+# Run the test
+echo "Starting BlazeMeter performance test..."
+bzt blazemeter-test.yml -o modules.blazemeter.report-name="Build %system.build.number% Performance Test"
+
+# Save test ID for later reference
+BZM_TEST_ID=$(grep -oP 'Test ID: \K[0-9]+' bzt.log | tail -1)
+echo "##teamcity[setParameter name='env.BZM_TEST_ID' value='$BZM_TEST_ID']"
+echo "BlazeMeter Test ID: $BZM_TEST_ID"
+          ]]></param>
+          <param name="teamcity.step.mode" value="default" />
+          <param name="use.custom.script" value="true" />
+        </parameters>
+      </runner>
+      
+      <!-- Step 6: Collect Post-Deployment Metrics -->
+      <runner id="RUNNER_6" name="Collect Post-Deployment Metrics" type="jetbrains_powershell">
+        <parameters>
+          <param name="jetbrains_powershell_bitness" value="x64" />
+          <param name="jetbrains_powershell_execution" value="PS1" />
+          <param name="jetbrains_powershell_scriptArguments" value="-InstanceId &quot;%env.EC2_INSTANCE_ID%&quot; -Region &quot;%env.AWS_REGION%&quot; -OutputPath &quot;artifacts/metrics/post-deployment&quot; -TestId &quot;post-deployment-%system.build.number%&quot; -DurationMinutes 10" />
+          <param name="jetbrains_powershell_script_file" value="scripts/monitoring/collect-metrics.ps1" />
+          <param name="jetbrains_powershell_script_mode" value="FILE" />
+          <param name="teamcity.step.mode" value="default" />
+        </parameters>
+      </runner>
+      
+      <!-- Step 7: Publish Performance Metrics to GitHub -->
+      <runner id="RUNNER_7" name="Publish Performance Metrics to GitHub" type="jetbrains_powershell">
+        <parameters>
+          <param name="jetbrains_powershell_bitness" value="x64" />
+          <param name="jetbrains_powershell_execution" value="PS1" />
+          <param name="jetbrains_powershell_scriptArguments" value="-GitHubToken &quot;%env.GITHUB_TOKEN%&quot; -RepositoryOwner &quot;%env.GITHUB_REPO_OWNER%&quot; -RepositoryName &quot;%env.GITHUB_REPO_NAME%&quot; -IssueNumber %env.GITHUB_ISSUE_NUMBER% -MetricsPath &quot;artifacts/metrics/post-deployment&quot; -TestId &quot;post-deployment-%system.build.number%&quot; -IncludeCharts" />
+          <param name="jetbrains_powershell_script_file" value="scripts/monitoring/publish-to-github.ps1" />
+          <param name="jetbrains_powershell_script_mode" value="FILE" />
+          <param name="teamcity.step.mode" value="default" />
+        </parameters>
+      </runner>
+      
+      <!-- Step 8: Publish Infrastructure Metrics to GitHub -->
+      <runner id="RUNNER_8" name="Publish Infrastructure Metrics to GitHub" type="jetbrains_powershell">
+        <parameters>
+          <param name="jetbrains_powershell_bitness" value="x64" />
+          <param name="jetbrains_powershell_execution" value="PS1" />
+          <param name="jetbrains_powershell_scriptArguments" value="-GitHubToken &quot;%env.GITHUB_TOKEN%&quot; -RepositoryOwner &quot;%env.GITHUB_REPO_OWNER%&quot; -RepositoryName &quot;%env.GITHUB_REPO_NAME%&quot; -IssueNumber %env.GITHUB_ISSUE_NUMBER% -MetricsPath &quot;artifacts/metrics/pre-deployment&quot; -TestId &quot;pre-deployment-%system.build.number%&quot; -IncludeCharts" />
+          <param name="jetbrains_powershell_script_file" value="scripts/monitoring/publish-to-github.ps1" />
+          <param name="jetbrains_powershell_script_mode" value="FILE" />
+          <param name="teamcity.step.mode" value="default" />
+        </parameters>
+      </runner>
+    </build-runners>
+    <vcs-settings>
+      <vcs-entry-ref root-id="SampleWebApp_GitHubVcsRoot" />
+    </vcs-settings>
+    <requirements>
+      <equals name="teamcity.agent.jvm.os.name" value="Windows" />
+    </requirements>
+    <build-triggers>
+      <build-trigger id="TRIGGER_1" type="vcsTrigger">
+        <parameters>
+          <param name="branchFilter" value="+:*" />
+          <param name="enableQueueOptimization" value="true" />
+          <param name="quietPeriodMode" value="DO_NOT_USE" />
+        </parameters>
+      </build-trigger>
+    </build-triggers>
+    <build-extensions>
+      <extension id="BUILD_EXT_1" type="xml-report-plugin">
+        <parameters>
+          <param name="xmlReportParsing.reportDirs" value="artifacts/blazemeter-results/report.xml" />
+          <param name="xmlReportParsing.reportType" value="junit" />
+        </parameters>
+      </extension>
+    </build-extensions>
+    <artifact-dependencies>
+      <dependency id="ARTIFACT_DEPENDENCY_1" sourceBuildTypeId="SampleWebApp_CiCdPipeline" cleanDestination="false">
+        <revisionRule name="sameChainOrLastFinished" revision="latest.sameChainOrLastFinished" />
+        <artifact sourcePath="artifacts/metrics/pre-deployment => artifacts/metrics/pre-deployment" />
+      </dependency>
+    </artifact-dependencies>
+    <dependencies>
+      <depend-on sourceBuildTypeId="SampleWebApp_InfrastructureDeployment">
+        <options>
+          <option name="take-started-build-with-same-revisions" value="true" />
+          <option name="take-successful-builds-only" value="true" />
+        </options>
+      </depend-on>
+    </dependencies>
+  </settings>
+</build-type>

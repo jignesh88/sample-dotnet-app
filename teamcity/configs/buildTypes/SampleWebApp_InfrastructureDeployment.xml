@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<build-type xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" uuid="9012ijkl-mnop-qrst-uvwx-yz123456789a" xsi:noNamespaceSchemaLocation="https://www.jetbrains.com/teamcity/schemas/2021.1/project-config.xsd">
+  <name>Infrastructure Deployment</name>
+  <description>Deploy AWS infrastructure using CDK</description>
+  <settings>
+    <parameters>
+      <param name="env.AWS_ACCESS_KEY_ID" value="credentialsJSON:aws-access-key-id" />
+      <param name="env.AWS_SECRET_ACCESS_KEY" value="credentialsJSON:aws-secret-access-key" />
+      <param name="env.CDK_DEFAULT_REGION" value="%env.AWS_REGION%" />
+    </parameters>
+    <build-runners>
+      <!-- Step 1: Install CDK Dependencies -->
+      <runner id="RUNNER_1" name="Install CDK Dependencies" type="simpleRunner">
+        <parameters>
+          <param name="script.content"><![CDATA[
+#!/bin/bash
+
+cd infrastructure
+
+# Install Node.js dependencies
+echo "Installing Node.js dependencies..."
+npm install
+
+# Install AWS CDK globally if not already installed
+if ! command -v cdk &> /dev/null; then
+    echo "Installing AWS CDK globally..."
+    npm install -g aws-cdk
+fi
+
+# Bootstrap CDK (if needed)
+echo "Bootstrapping CDK in region %env.AWS_REGION%..."
+cdk bootstrap aws://%system.teamcity.build.accountId%/%env.AWS_REGION%
+          ]]></param>
+          <param name="teamcity.step.mode" value="default" />
+          <param name="use.custom.script" value="true" />
+        </parameters>
+      </runner>
+      
+      <!-- Step 2: Synthesize CDK Stack -->
+      <runner id="RUNNER_2" name="Synthesize CDK Stack" type="simpleRunner">
+        <parameters>
+          <param name="script.content"><![CDATA[
+#!/bin/bash
+
+cd infrastructure
+
+# Synthesize CloudFormation template
+echo "Synthesizing CloudFormation template..."
+cdk synth
+
+# Save the EC2 instance ID for later use
+INSTANCE_ID=$(grep -A 5 "WebServer:" cdk.out/SampleWebAppInfraStack.template.json | grep "Ref" | head -1 | sed -E 's/.*"Ref": "([^"]+)".*/\1/')
+echo "##teamcity[setParameter name='system.EC2_INSTANCE_ID' value='$INSTANCE_ID']"
+echo "EC2 Instance ID: $INSTANCE_ID"
+          ]]></param>
+          <param name="teamcity.step.mode" value="default" />
+          <param name="use.custom.script" value="true" />
+        </parameters>
+      </runner>
+      
+      <!-- Step 3: Deploy CDK Stack -->
+      <runner id="RUNNER_3" name="Deploy CDK Stack" type="simpleRunner">
+        <parameters>
+          <param name="script.content"><![CDATA[
+#!/bin/bash
+
+cd infrastructure
+
+# Deploy the stack
+echo "Deploying infrastructure stack..."
+cdk deploy --require-approval never
+
+# Extract and save outputs
+echo "Extracting stack outputs..."
+OUTPUTS=$(aws cloudformation describe-stacks --stack-name SampleWebAppInfraStack --query "Stacks[0].Outputs" --output json)
+
+# Extract EC2 instance ID
+EC2_INSTANCE_ID=$(echo $OUTPUTS | jq -r '.[] | select(.OutputKey=="WebServerInstanceId") | .OutputValue')
+echo "##teamcity[setParameter name='system.EC2_INSTANCE_ID' value='$EC2_INSTANCE_ID']"
+echo "EC2 Instance ID: $EC2_INSTANCE_ID"
+
+# Extract website URL
+WEBSITE_URL=$(echo $OUTPUTS | jq -r '.[] | select(.OutputKey=="WebsiteURL") | .OutputValue')
+echo "##teamcity[setParameter name='env.WEBSITE_URL' value='$WEBSITE_URL']"
+echo "Website URL: $WEBSITE_URL"
+
+# Extract deployment bucket name
+DEPLOYMENT_BUCKET=$(echo $OUTPUTS | jq -r '.[] | select(.OutputKey=="DeploymentBucketName") | .OutputValue')
+echo "##teamcity[setParameter name='env.DEPLOYMENT_BUCKET' value='$DEPLOYMENT_BUCKET']"
+echo "Deployment Bucket: $DEPLOYMENT_BUCKET"
+          ]]></param>
+          <param name="teamcity.step.mode" value="default" />
+          <param name="use.custom.script" value="true" />
+        </parameters>
+      </runner>
+      
+      <!-- Step 4: Create S3 Bucket for Deployment Artifacts (if it doesn't exist) -->
+      <runner id="RUNNER_4" name="Create S3 Bucket for Deployment Artifacts" type="simpleRunner">
+        <parameters>
+          <param name="script.content"><![CDATA[
+#!/bin/bash
+
+# Check if the deployment bucket exists
+if aws s3api head-bucket --bucket %env.DEPLOYMENT_BUCKET% 2>/dev/null; then
+    echo "Deployment bucket %env.DEPLOYMENT_BUCKET% already exists."
+else
+    echo "Creating deployment bucket %env.DEPLOYMENT_BUCKET%..."
+    aws s3api create-bucket \
+        --bucket %env.DEPLOYMENT_BUCKET% \
+        --region %env.AWS_REGION% \
+        --create-bucket-configuration LocationConstraint=%env.AWS_REGION%
+    
+    # Enable versioning
+    aws s3api put-bucket-versioning \
+        --bucket %env.DEPLOYMENT_BUCKET% \
+        --versioning-configuration Status=Enabled
+    
+    # Enable encryption
+    aws s3api put-bucket-encryption \
+        --bucket %env.DEPLOYMENT_BUCKET% \
+        --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}'
+    
+    # Block public access
+    aws s3api put-public-access-block \
+        --bucket %env.DEPLOYMENT_BUCKET% \
+        --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+    
+    echo "Deployment bucket created successfully."
+fi
+          ]]></param>
+          <param name="teamcity.step.mode" value="default" />
+          <param name="use.custom.script" value="true" />
+        </parameters>
+      </runner>
+    </build-runners>
+    <vcs-settings>
+      <vcs-entry-ref root-id="SampleWebApp_GitHubVcsRoot" />
+    </vcs-settings>
+    <requirements>
+      <exists name="env.AWS_ACCESS_KEY_ID" />
+      <exists name="env.AWS_SECRET_ACCESS_KEY" />
+    </requirements>
+    <build-triggers>
+      <build-trigger id="TRIGGER_1" type="vcsTrigger">
+        <parameters>
+          <param name="branchFilter" value="+:*" />
+          <param name="enableQueueOptimization" value="true" />
+          <param name="quietPeriodMode" value="DO_NOT_USE" />
+          <param name="pathsToInclude" value="+:infrastructure/**" />
+        </parameters>
+      </build-trigger>
+    </build-triggers>
+  </settings>
+</build-type>
